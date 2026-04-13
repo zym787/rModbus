@@ -40,7 +40,7 @@ impl ModbusSerialClient {
         self.port.write_all(&request).context("Failed to write to serial port")?;
         
         // 读取响应
-        let mut response = vec![0; 5 + (count * 2) as usize];
+        let mut response = vec![0; 5 + (count as usize) * 2];
         self.port.read_exact(&mut response).context("Failed to read from serial port")?;
         
         // 验证响应
@@ -79,7 +79,7 @@ impl ModbusSerialClient {
         self.port.write_all(&request).context("Failed to write to serial port")?;
         
         // 读取响应
-        let mut response = vec![0; 5 + (count * 2) as usize];
+        let mut response = vec![0; 5 + (count as usize) * 2];
         self.port.read_exact(&mut response).context("Failed to read from serial port")?;
         
         // 验证响应
