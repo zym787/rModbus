@@ -32,6 +32,7 @@ jobs:
     name: Release
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os:
