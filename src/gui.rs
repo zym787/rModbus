@@ -72,6 +72,8 @@ impl ModbusApp {
                 }
             }
         }
+        // 重新获取可用端口，确保端口列表是最新的
+        self.available_ports = crate::list_available_ports().unwrap_or_default().into_iter().map(|p| p.port_name).collect();
     }
     
     // 保存配置
