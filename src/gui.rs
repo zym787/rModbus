@@ -166,6 +166,34 @@ impl ModbusApp {
 
 impl eframe::App for ModbusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 菜单栏
+        egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("文件", |ui| {
+                    if ui.button("退出").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.menu_button("关于", |ui| {
+                    egui::Window::new("关于")
+                        .resizable(false)
+                        .show(ctx, |ui| {
+                            ui.heading("AGS阀门控制");
+                            ui.separator();
+                            ui.label(format!("版本: v0.1.0"));
+                            ui.label(format!("作者: Drinkto"));
+                            ui.label("简介: Rust Modbus RTU上位机，用于读取和显示阀门控制寄存器数据");
+                            ui.label("支持功能:");
+                            ui.label("- 串口设置与连接");
+                            ui.label("- Modbus寄存器读取");
+                            ui.label("- 多格式显示（十进制、十六进制、二进制）");
+                            ui.label("- 寄存器别名设置");
+                            ui.label("- 参数保存与导入导出");
+                            ui.label("- Modbus实时状态显示");
+                        });
+                });
+            });
+        });
         
         egui::CentralPanel::default().show(ctx, |ui| {
             // 设置字体大小
