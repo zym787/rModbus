@@ -1,7 +1,10 @@
 use eframe::egui;
 use crate::ModbusSerialClient;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ModbusApp {
     // 串口设置
     port: String,
@@ -12,18 +15,30 @@ pub struct ModbusApp {
     // 寄存器设置
     start_address: u16,
     register_count: u16,
+    register_aliases: Vec<String>,
     
     // 控制状态
     connected: bool,
+    #[serde(skip)]
     client: Option<ModbusSerialClient>,
     registers: Vec<u16>,
     error_message: String,
     
     // 显示样式
     display_style: DisplayStyle,
+    
+    // 布局设置
+    rows: usize,
+    columns: usize,
+    
+    // 状态信息
+    connection_status: String,
+    packet_loss: u32,
+    error_count: u32,
+    last_error: String,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Default, Serialize, Deserialize)]
 enum DisplayStyle {
     #[default]
     Decimal,
@@ -39,8 +54,58 @@ impl ModbusApp {
         app.slave_id = 1;
         app.start_address = 0;
         app.register_count = 100;
+        app.rows = 5;
+        app.columns = 5;
+        app.connection_status = "未连接".to_string();
         app.available_ports = crate::list_available_ports().unwrap_or_default().into_iter().map(|p| p.port_name).collect();
+        app.load_config();
         app
+    }
+    
+    // 加载配置
+    fn load_config(&mut self) {
+        let config_path = Self::get_config_path();
+        if config_path.exists() {
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                if let Ok(config) = serde_json::from_str(&content) {
+                    *self = config;
+                }
+            }
+        }
+    }
+    
+    // 保存配置
+    fn save_config(&self) {
+        let config_path = Self::get_config_path();
+        if let Ok(content) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(&config_path, content);
+        }
+    }
+    
+    // 获取配置文件路径
+    fn get_config_path() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("config.json");
+        path
+    }
+    
+    // 导入寄存器配置
+    fn import_register_config(&mut self, path: &str) {
+        if let Ok(content) = fs::read_to_string(path) {
+            if let Ok((aliases, start_addr, count)) = serde_json::from_str(&content) {
+                self.register_aliases = aliases;
+                self.start_address = start_addr;
+                self.register_count = count;
+            }
+        }
+    }
+    
+    // 导出寄存器配置
+    fn export_register_config(&self, path: &str) {
+        let config = (&self.register_aliases, self.start_address, self.register_count);
+        if let Ok(content) = serde_json::to_string_pretty(&config) {
+            let _ = fs::write(path, content);
+        }
     }
     
     fn connect(&mut self) {
@@ -49,10 +114,15 @@ impl ModbusApp {
                 self.client = Some(client);
                 self.connected = true;
                 self.error_message = "".to_string();
+                self.connection_status = "已连接".to_string();
+                self.save_config();
             }
             Err(e) => {
                 self.error_message = format!("Failed to connect: {:?}", e);
                 self.connected = false;
+                self.connection_status = "连接失败".to_string();
+                self.last_error = self.error_message.clone();
+                self.error_count += 1;
             }
         }
     }
@@ -61,21 +131,34 @@ impl ModbusApp {
         if let Some(client) = &mut self.client {
             match client.read_holding_registers(self.slave_id, self.start_address, self.register_count) {
                 Ok(registers) => {
+                    let registers_len = registers.len();
                     self.registers = registers;
                     self.error_message = "".to_string();
+                    // 确保寄存器别名数量与寄存器数量一致
+                    while self.register_aliases.len() < registers_len {
+                        self.register_aliases.push(format!("寄存器 {}", self.start_address + self.register_aliases.len() as u16));
+                    }
+                    self.save_config();
                 }
                 Err(e) => {
                     self.error_message = format!("Failed to read registers: {:?}", e);
+                    self.last_error = self.error_message.clone();
+                    self.error_count += 1;
+                    self.packet_loss += 1;
                 }
             }
         } else {
             self.error_message = "Not connected".to_string();
+            self.last_error = self.error_message.clone();
+            self.error_count += 1;
         }
     }
     
     fn disconnect(&mut self) {
         self.client = None;
         self.connected = false;
+        self.connection_status = "未连接".to_string();
+        self.save_config();
     }
 }
 
@@ -83,6 +166,7 @@ impl ModbusApp {
 
 impl eframe::App for ModbusApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        
         egui::CentralPanel::default().show(ctx, |ui| {
             // 设置字体大小
             ui.style_mut().text_styles.insert(
@@ -94,12 +178,13 @@ impl eframe::App for ModbusApp {
                 egui::FontId::new(14.0, egui::FontFamily::Proportional),
             );
             
-            ui.heading("Modbus RTU上位机");
+            // 只保留一个标题
+            ui.heading("AGS阀门控制");
             ui.separator();
             
             // 使用垂直布局
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // 第一行：串口设置和控制集成在一起
+                // 第一行：串口设置及状态检测，控制栏和Modbus状态
                 ui.horizontal(|ui| {
                     // 串口设置
                     ui.group(|ui| {
@@ -107,13 +192,13 @@ impl eframe::App for ModbusApp {
                         ui.add_space(10.0);
                         
                         // 使用网格布局
-                        let grid = egui::Grid::new(egui::Id::new("serial_settings"))
+                        let grid = egui::Grid::new(egui::Id::new(1))
                             .num_columns(2)
                             .spacing([20.0, 10.0]);
                         
                         grid.show(ui, |ui| {
                             ui.label("端口:");
-                            egui::ComboBox::from_id_source(egui::Id::new("port_combo"))
+                            egui::ComboBox::from_id_source(egui::Id::new(2))
                                 .selected_text(&self.port)
                                 .width(150.0)
                                 .show_ui(ui, |ui| {
@@ -122,19 +207,19 @@ impl eframe::App for ModbusApp {
                                         self.available_ports = crate::list_available_ports().unwrap_or_default().into_iter().map(|p| p.port_name).collect();
                                     }
                                     
-                                    for port in &self.available_ports {
+                                    for (i, port) in self.available_ports.iter().enumerate() {
                                         ui.selectable_value(&mut self.port, port.clone(), port);
                                     }
                                 });
                             ui.end_row();
                             
                             ui.label("波特率:");
-                            egui::ComboBox::from_id_source(egui::Id::new("baud_rate_combo"))
+                            egui::ComboBox::from_id_source(egui::Id::new(3))
                                 .selected_text(&self.baud_rate.to_string())
                                 .width(150.0)
                                 .show_ui(ui, |ui| {
                                     let baud_rates = vec![1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
-                                    for &rate in baud_rates.iter() {
+                                    for (i, &rate) in baud_rates.iter().enumerate() {
                                         ui.selectable_value(&mut self.baud_rate, rate, &rate.to_string());
                                     }
                                 });
@@ -168,19 +253,61 @@ impl eframe::App for ModbusApp {
                                     self.read_registers();
                                 }
                             }
+                            
+                            ui.add_space(10.0);
+                            
+                            // 导入导出按钮
+                            if ui.button(egui::RichText::new("导入配置").size(14.0)).clicked() {
+                                // 这里简化处理，实际应该使用文件对话框
+                                self.import_register_config("register_config.json");
+                            }
+                            if ui.button(egui::RichText::new("导出配置").size(14.0)).clicked() {
+                                // 这里简化处理，实际应该使用文件对话框
+                                self.export_register_config("register_config.json");
+                            }
                         });
+                    });
+                    
+                    ui.add_space(20.0);
+                    
+                    // Modbus实时状态
+                    ui.group(|ui| {
+                        ui.heading("Modbus状态");
+                        ui.add_space(10.0);
+                        
+                        egui::Grid::new(egui::Id::new(10))
+                            .num_columns(2)
+                            .spacing([40.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label("连接状态:");
+                                ui.label(egui::RichText::new(&self.connection_status)
+                                    .color(if self.connected { egui::Color32::GREEN } else { egui::Color32::RED }));
+                                ui.end_row();
+                                
+                                ui.label("丢包次数:");
+                                ui.label(format!("{}", self.packet_loss));
+                                ui.end_row();
+                                
+                                ui.label("错误次数:");
+                                ui.label(format!("{}", self.error_count));
+                                ui.end_row();
+                                
+                                ui.label("最后错误:");
+                                ui.label(egui::RichText::new(&self.last_error).color(egui::Color32::RED));
+                                ui.end_row();
+                            });
                     });
                 });
                 
                 ui.add_space(20.0);
                 
-                // 第二行：Modbus相关的寄存器设置放在一起
+                // 第二栏：Modbus设置
                 ui.group(|ui| {
                     ui.heading("Modbus设置");
                     ui.add_space(10.0);
                     
-                    egui::Grid::new(egui::Id::new("modbus_settings"))
-                        .num_columns(2)
+                    egui::Grid::new(egui::Id::new(11))
+                        .num_columns(3)
                         .spacing([40.0, 10.0])
                         .show(ui, |ui| {
                             // 寄存器设置
@@ -188,7 +315,7 @@ impl eframe::App for ModbusApp {
                                 ui.heading("寄存器设置");
                                 ui.add_space(5.0);
                                 
-                                let grid = egui::Grid::new(egui::Id::new("register_settings"))
+                                let grid = egui::Grid::new(egui::Id::new(12))
                                     .num_columns(2)
                                     .spacing([20.0, 10.0]);
                                 
@@ -216,6 +343,28 @@ impl eframe::App for ModbusApp {
                                     ui.selectable_value(&mut self.display_style, DisplayStyle::Binary, "二进制");
                                 });
                             });
+                            
+                            // 布局设置
+                            ui.vertical(|ui| {
+                                ui.heading("布局设置");
+                                ui.add_space(5.0);
+                                
+                                let grid = egui::Grid::new(egui::Id::new(18))
+                                    .num_columns(2)
+                                    .spacing([20.0, 10.0]);
+                                
+                                grid.show(ui, |ui| {
+                                    ui.label("行数:");
+                                    ui.add(egui::DragValue::new(&mut self.rows)
+                                        .range(1..=20));
+                                    ui.end_row();
+                                    
+                                    ui.label("列数:");
+                                    ui.add(egui::DragValue::new(&mut self.columns)
+                                        .range(1..=10));
+                                    ui.end_row();
+                                });
+                            });
                         });
                 });
                 
@@ -231,7 +380,7 @@ impl eframe::App for ModbusApp {
                     ui.add_space(20.0);
                 }
                 
-                // 寄存器数据显示
+                // 第四栏：寄存器数据
                 ui.group(|ui| {
                     ui.heading("寄存器数据");
                     ui.add_space(10.0);
@@ -240,13 +389,11 @@ impl eframe::App for ModbusApp {
                         egui::ScrollArea::vertical()
                             .max_height(400.0)
                             .show(ui, |ui| {
-                                // 根据窗口宽度自动调整列数
-                                let window_width = ui.available_width();
-                                let item_width = 200.0; // 每个寄存器项的宽度
-                                let columns = (window_width / item_width).max(1.0).min(5.0) as usize; // 最多5列
+                                // 使用用户设置的列数
+                                let columns = self.columns.max(1).min(10);
                                 
                                 // 使用网格布局显示寄存器数据，按阵列形式排列
-                                let mut grid = egui::Grid::new(egui::Id::new("register_data"))
+                                let grid = egui::Grid::new(egui::Id::new(21))
                                     .num_columns(columns)
                                     .spacing([20.0, 10.0]);
                                 
@@ -254,12 +401,27 @@ impl eframe::App for ModbusApp {
                                     for (i, &value) in self.registers.iter().enumerate() {
                                         let address = self.start_address + i as u16;
                                         ui.group(|ui| {
-                                            ui.label(format!("寄存器 {}", address));
+                                            // 显示寄存器别名或默认名称
+                                            let alias = if i < self.register_aliases.len() && !self.register_aliases[i].is_empty() {
+                                                &self.register_aliases[i]
+                                            } else {
+                                                &format!("寄存器 {}", address)
+                                            };
+                                            ui.label(alias);
                                             match self.display_style {
                                                 DisplayStyle::Decimal => ui.label(format!("{}", value)),
                                                 DisplayStyle::Hexadecimal => ui.label(format!("0x{:04X}", value)),
                                                 DisplayStyle::Binary => ui.label(format!("{:016b}", value)),
                                             };
+                                            
+                                            // 编辑寄存器别名
+                                            if i < self.register_aliases.len() {
+                                                ui.text_edit_singleline(&mut self.register_aliases[i]);
+                                            } else {
+                                                let mut new_alias = format!("寄存器 {}", address);
+                                                ui.text_edit_singleline(&mut new_alias);
+                                                self.register_aliases.push(new_alias);
+                                            }
                                         });
                                         
                                         // 每列显示完后换行

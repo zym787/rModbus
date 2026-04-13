@@ -2742,6 +2742,8 @@ dependencies = [
  "eframe",
  "egui",
  "modbus",
+ "serde",
+ "serde_json",
  "serialport",
 ]
 
